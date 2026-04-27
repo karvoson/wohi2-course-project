@@ -1,7 +1,9 @@
 const { PrismaClient } = require("@prisma/client");
+const bcrypt = require("bcrypt");
 const prisma = new PrismaClient();
 
-const seedPosts = [
+
+const seedQuestions = [
   {
     title: "Introduction to HTTP",
     date: new Date("2026-03-20"),
@@ -32,18 +34,29 @@ const seedPosts = [
   },
 ];
 
-async function main() {
-  await prisma.post.deleteMany();
-  await prisma.keyword.deleteMany();
 
-  for (const post of seedPosts) {
-    await prisma.post.create({
+
+async function main() {
+  // Create a default user
+  const hashedPassword = await bcrypt.hash("1234", 10);
+  const user = await prisma.user.create({
+    data: {
+      email: "admin@example.com",
+      password: hashedPassword,
+      name: "Admin User",
+    },
+  });
+
+  console.log("Created user:", user.email);
+ 
+  for (const question of seedQuestions) {
+    await prisma.question.create({
       data: {
-        title: post.title,
-        date: post.date,
-        content: post.content,
+        title: question.title,
+        date: question.date,
+        content: question.content,
         keywords: {
-          connectOrCreate: post.keywords.map((kw) => ({
+          connectOrCreate: question.keywords.map((kw) => ({
             where: { name: kw },
             create: { name: kw },
           })),

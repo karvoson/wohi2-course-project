@@ -13,20 +13,30 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Post {
+model User {
+  id       Int    @id @default(autoincrement())
+  email    String @unique @db.VarChar(255)
+  password String @db.VarChar(255)
+  name     String @db.VarChar(100)
+  questions    Questions[]
+}
+
+model Questions {
   id       Int       @id @default(autoincrement())
   title    String    @db.VarChar(255)
   date     DateTime
   content  String    @db.Text
   keywords Keyword[]
+  userId   Int
+  user     User @relation(fields: [userId], references: [id])
 
-  @@map("posts")
+  @@map("questions")
 }
 
 model Keyword {
   id    Int    @id @default(autoincrement())
   name  String @unique @db.VarChar(100)
-  posts Post[]
+  questions Questions[]
 
   @@map("keywords")
 }
