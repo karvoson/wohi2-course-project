@@ -5,6 +5,16 @@ const authenticate = require("../middleware/auth");
 const isOwner = require("../middleware/isOwner");
 const multer = require("multer");
 const path = require("path");
+const {NotFoundError} = require("../lib/errors");
+const { ValidationError } = require("../lib/errors");
+const {z} = require("zod");
+
+const QuestionInput = z.object({
+  title: z.string().min(1),
+  date: z.string().date(),
+  content: z.string().min(1),
+  keywords: z.union([z.string(),z.array(z.string())]).optional()
+})
 
 const storage = multer.diskStorage({
   destination: path.join(__dirname,"..","..","public","uploads"),
@@ -18,7 +28,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    if (file.mimeType.startsWith("image")) {
+    if (file.mimetype.startsWith("image")) {
       cb(null, true) 
       } else {
         cb(new Error ("Only images allowed"))
@@ -30,143 +40,15 @@ const upload = multer({
 
 router.use(authenticate);
 // GET /posts 
-// List all posts
-router.get("/", (req, res) => {
-    const { keyword } = req.query;
-  
-    if (!keyword) {
-      return res.json(questions);
-    }
-  
-    const filteredQuestions = questions.filter(questions =>
-      questions.keywords.includes(keyword.toLowerCase())
-    );
-  
-    res.json(filteredQuestions);
-  });  
+// List all posts 
 
-  router.get("/", async (req, res) => {
-  const [filteredQuestions, total] = await Promise.all([
-    prisma.questions.findMany({
-        where,
-        
-  include: {
-       keywords: true,
-        user: true,
-        likes: { where: { userId: req.user.userId }, take: 1 },
-      _count: { select: { likes: true } },
-       orderBy: { id: "asc" },
-        skip,
-        take: limit,
-    }}),
-    prisma.questions.count({ where }),
-    
-  ]);
-  
-  prisma.questions.findMany({
-    include: {
-        keywords: true,
-        user: true,
-        likes: { where: { userId: req.user.userId }, take: 1 },
-        _count: { select: { likes: true } },
-    },
-});
-  });
-
-  // GET /posts/:postId
-router.get("/:questionId", async (req, res) => {
-  const questionId = Number(req.params.questionId);
-  const question = await prisma.post.findUnique({
-      where: { id: questionId },
-      include: {
-          keywords: true,
-          user: true,
-          likes: { where: { userId: req.user.userId }, take: 1 },
-          _count: { select: { likes: true } },
-      },
-  });
-
-  if (!question) {
-      return res.status(404).json({message: "Post not found"});
+function parseKeywords(keywords) {
+  if (Array.isArray(keywords)) return keywords;
+  if (typeof keywords === "string") {
+    return keywords.split(",").map((k) => k.trim()).filter(Boolean);
   }
-  res.json(formatQuestion(question));
-});
-
-
- router.post("/",upload.single("image"),async  (req, res) => {
-    const { title, date, content, keywords } = req.body;
-  
-    if (!title || !date || !content) {
-      return res.status(400).json({
-        message: "title, date, and content are required"
-      });
-    }
-    
-    const keywordsArray = Array.isArray(keywords) ? keywords : [];
-    const imageUrl = req.file ? `/uploads/${req.file.filename}`:null;
-
-    const newQuestion = await prisma.question.create({
-      data: {
-        title, date: new Date(date), content, imageUrl,
-        userId: req.user.userId,
-        keywords: {
-          connectOrCreate: keywordsArray.map((kw) => ({
-            where: { name: kw }, create: { name: kw},
-          })), },
-      },
-      include: { keywords: true},
-      
-    });
-    res.status(201).json(formatQuestion(newQuestion));
-
-  });
-  
-  // PUT /posts/:postId
-// Edit a post
-router.put("/:questionId",isOwner,upload.single("image"), async (req, res) => {
-  const questionId = Number(req.params.questionId);
-  const { title, date, content, keywords } = req.body;
-
-  const existingQuestion = await prisma.question.findUnique({where : { id: questionId }
-  });
-
-
-  if (!existingQuestion) {
-    return res.status(404).json({ message: "Question not found "});
-  }
-  if (!title || !date || !content) {
-    return res.status(400).json({message: "title, sate and content are mandatory"
-  });
-  }
-  const imageUrl = req.file ? `/uploads/${req.file.filename}`:null;
-
-  const keywordsArray = Array.isArray(keywords) ? keywords : [];
-  const updatedQuestion = await prisma.question.update({
-    where: { id: questionId },
-    data: {
-      title, date: newDate(date), content, imageUrl, 
-      keywords: {
-        set: [],
-        connectOrCreate: keywordsArray.map((kw) => ({
-          where: {name: kw},
-          create: {name: kw},
-        })),
-     },
-    },
-
-    include: { keywords: true},
-  });
-  
-  res.json(formatQuestion(updatedQuestion));
-
-
-  const question = questions.find((q) => q.id === questionId);
-
-  const questions = await prisma.question.findMany({
-    where,
-    include: { keywords: true, user: true },
-    orderBy: { id: "asc" }
-});
+  return [];
+}
 
 function formatQuestion(question) {
   return {
@@ -183,58 +65,171 @@ function formatQuestion(question) {
 }
   
 
-  if (!question) {
-    return res.status(404).json({ message: "Question not found" });
-  }
+router.get("/", async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 5));
+  const skip = (page - 1) * limit;
 
-  if (!title || !date || !content) {
-    return res.json({
-      message: "title, date, and content are required"
-    });
-  }
+  const { keyword } = req.query;
+  const where = keyword ? { keywords: { some: { name: keyword}}}: {};
 
-  question.title = title;
-  question.date = date;
-  question.content = content;
-  question.keywords = Array.isArray(keywords) ? keywords : [];
-
-  res.json(question);
-  router.use(authenticate);
+  const [filteredQuestions, total] = await Promise.all([
+    prisma.question.findMany({
+      where,
+       include: {
+          keywords: true,
+          user: true,
+          attempts: true,
+       },  
+       orderBy: { id: "asc" },
+        skip,
+        take: limit,
+    }),
+    prisma.questions.count({ where }),
+  ]);
+  res.json({
+    data: filteredQuestions.map((q) => formatQuestion(q, req.user.userId)),
+    page,
+    limit,
+    total,
+    totalPages: Math.ceil(total / limit),
+  });
 });
 
 
-router.delete("/:questionId", async (req, res) => {
+  // GET /posts/:postId
+router.get("/:questionId", async (req, res) => {
+  const questionId = Number(req.params.questionId);
+  const question = await prisma.question.findUnique({
+      where: { id: questionId },
+      include: {
+          keywords: true,
+          user: true,
+          attempts: true,
+          likes: { where: { userId: req.user.userId }, take: 1 },
+          _count: { select: { likes: true } },
+      },
+  });
+
+  if (!question) {
+    throw new NotFoundError("Question not found");
+  }
+  res.json(formatQuestion(question, req.user.userId));
+});
+
+
+ router.post("/",upload.single("image"),async  (req, res) => {
+
+    const { title, date, content, keywords } = QuestionInput.parse(req.body);
+    const imageUrl = req.file ? `/uploads/${req.file.filename}`:null;
+
+    if (!question || !answer) {
+      throw new ValidationError("title, date and content required");
+    }
+
+    const keywordsArray = parseKeywords(keywords);
+
+    const newQuestion = await prisma.question.create({
+      data: {
+        title: question,
+        date: new Date(date), 
+        content: answer,
+        imageUrl,
+        userId: req.user.userId,
+        keywords: {
+          connectOrCreate: keywordsArray.map((kw) => ({
+            where: { name: kw }, 
+            create: { name: kw},
+          })), 
+        },
+      },
+      include:{ 
+        keywords: true,
+        user: true,
+        attempts: true,
+        likes: {where: {userId: req.user.userId}, take: 1},
+        _count: { select: {likes: true}}
+    },
+    });
+    res.status(201).json(formatQuestion(newQuestion, req.user.userId));
+
+  });
+  
+  // PUT /posts/:postId
+// Edit a post
+router.put("/:questionId",isOwner,upload.single("image"), async (req, res) => {
+  const questionId = Number(req.params.questionId);
+  const { title, date, content, keywords } = req.body;
+
+  const existingQuestion = await prisma.question.findUnique({where: {id: questionId}});
+
+  if (!existingQuestion) {
+    throw new NotFoundError("Question not found");
+  }
+  if (!title || !date || !content) {
+    throw new ValidationError("title, date and content are mandatory");
+  }
+  const data = {
+    title,
+    date: new Date(date),
+    content,
+  };
+  if (req.file) {
+    data.imageUrl = `/uploads/${req.file.filename}`;
+  }
+  
+  const keywordsArray = parseKeywords(keywords);
+  const updatedQuestion = await prisma.question.update({
+    where: { id: questionId },
+    data: {
+      ...data,
+      keywords: {
+        set: [],
+        connectOrCreate: keywordsArray.map((kw) => ({
+          where: {name: kw},
+          create: {name: kw},
+        })),
+     },
+    },
+
+    include: { keywords: true}, attempts: true,
+  });
+  res.json(formatQuestion(updatedQuestion, req.user.userId));
+});
+
+
+router.delete("/:questionId", isOwner, async (req, res) => {
   const questionId = Number(req.params.questionId);
 
   const question = await prisma.question.findUnique({
     where: { id: questionId },
-    include: { keywords: true },
+    include: { keywords: true, attempts: true },
   });
 
   if (!question) {
-    return res.status(404).json({ message: "Question not found" });
+    throw new NotFoundError("Question not found");
   }
 
   await prisma.question.delete({ where: { id: questionId } });
 
   res.json({
-    data: filteredQuestions.map(formatQuestion),
-    page,
-    limit,
-    total,
-    totalPages: Math.ceil(total / limit),
+    message: "Question deteted succesfully",
+    question: formatQuestion(question, req.user.userId),
 });
-
-;
 });
-
 
 router.post("/:questionId/like", async (req, res) => {
-  const questionId = Number(req.params.postId);
+  const questionId = Number(req.params.questionId);
+  const { answer} = req.body;
+  
+  if (!answer) {
+    throw new NotFoundError("Answer is required");
+  }
 
-  const question = await prisma.post.findUnique({ where: { id: questionId } });
+  const question = await prisma.question.findUnique({ 
+    where: { id: questionId } });
   if (!question) {
-      return res.status(404).json({ message: "Post not found" });
+    throw new NotFoundError("Question not found");
   }
 
   const like = await prisma.like.upsert({
@@ -260,7 +255,7 @@ const questionId = Number(req.params.questionId);
 
 const question = await prisma.question.findUnique({ where: { id: questionId } });
 if (!question) {
-    return res.status(404).json({ message: "Post not found" });
+  throw new NotFoundError("Question not found");
 }
 
 await prisma.like.deleteMany({
